@@ -158,9 +158,14 @@ void main() {
   });
 
   group('MMFile - Offsets & Resizing', () {
-    test('maps with a 64KB-aligned non-zero offset', () {
-      const granularity =
-          64 * 1024; // Windows allocation granularity (65,536 bytes)
+    test('exposes a valid power-of-two allocationGranularity', () {
+      final granularity = MMFile.allocationGranularity;
+      expect(granularity, greaterThanOrEqualTo(4096));
+      expect(granularity & (granularity - 1), 0);
+    });
+
+    test('maps with an allocationGranularity-aligned non-zero offset', () {
+      final granularity = MMFile.allocationGranularity;
       final path = tempFilePath('offset.bin');
 
       final initial = Uint8List(granularity + 128);
@@ -190,28 +195,100 @@ void main() {
       expect(updated[granularity + 1], 0xCC);
     });
 
-    test('fails when offset is not aligned to OS allocation granularity', () {
+    test('maps with an unaligned offset (512 bytes) and flushes accurately', () {
       final path = tempFilePath('unaligned_offset.bin');
-      File(path).writeAsBytesSync(Uint8List(8192));
-
-      expect(
-        () => MMFile.open(path, offset: 512, length: 1024),
-        throwsStateError,
+      final initial = Uint8List.fromList(
+        List.generate(8192, (i) => i % 251),
       );
+      File(path).writeAsBytesSync(initial);
+
+      final file = MMFile.open(
+        path,
+        mode: MMFileMode.readWrite,
+        offset: 512,
+        length: 1024,
+      );
+      try {
+        expect(file.length, 1024);
+        expect(file.bytes[0], initial[512]);
+        expect(file.bytes[1023], initial[512 + 1023]);
+
+        file.bytes[0] = 0xDE;
+        file.bytes[1023] = 0xAD;
+        file.flush();
+      } finally {
+        file.close();
+      }
+
+      final updated = File(path).readAsBytesSync();
+      expect(updated[511], initial[511]);
+      expect(updated[512], 0xDE);
+      expect(updated[512 + 1023], 0xAD);
+      expect(updated[512 + 1024], initial[512 + 1024]);
+    });
+
+    test('maps with unaligned offset and omitted length until EOF', () {
+      final path = tempFilePath('unaligned_eof.bin');
+      final initial = Uint8List.fromList(
+        List.generate(5000, (i) => i % 256),
+      );
+      File(path).writeAsBytesSync(initial);
+
+      final file = MMFile.open(path, offset: 333);
+      try {
+        expect(file.length, 5000 - 333);
+        expect(file.bytes, orderedEquals(initial.sublist(333)));
+      } finally {
+        file.close();
+      }
+    });
+
+    test('maps with offset 4096 (page-aligned on Linux, auto-aligned on Windows)', () {
+      final path = tempFilePath('offset_4096.bin');
+      final initial = Uint8List(8192);
+      initial[4096] = 0x11;
+      initial[4096 + 1023] = 0x22;
+      File(path).writeAsBytesSync(initial);
+
+      final file = MMFile.open(
+        path,
+        mode: MMFileMode.readWrite,
+        offset: 4096,
+        length: 1024,
+      );
+      try {
+        expect(file.length, 1024);
+        expect(file.bytes[0], 0x11);
+        expect(file.bytes[1023], 0x22);
+
+        file.bytes[10] = 0x33;
+        file.flush();
+      } finally {
+        file.close();
+      }
+
+      final updated = File(path).readAsBytesSync();
+      expect(updated[4096 + 10], 0x33);
     });
 
     test(
-      'fails when offset is 4096 (not aligned to Windows 64KB granularity)',
+      'maps with page-aligned offset 4096 on Linux',
       () {
-        final path = tempFilePath('unaligned_4096_offset.bin');
-        File(path).writeAsBytesSync(Uint8List(8192));
+        expect(MMFile.allocationGranularity, 4096);
+        final path = tempFilePath('linux_4096_offset.bin');
+        final initial = Uint8List(8192);
+        initial[4096] = 0x5A;
+        File(path).writeAsBytesSync(initial);
 
-        expect(
-          () => MMFile.open(path, offset: 4096, length: 1024),
-          throwsStateError, // MapViewOfFile fails with ERROR_MAPPED_ALIGNMENT (1132)
-        );
+        final file = MMFile.open(path, offset: 4096, length: 1024);
+        try {
+          expect(file.length, 1024);
+          expect(file.bytes[0], 0x5A);
+        } finally {
+          file.close();
+        }
       },
-      testOn: 'windows',
+      testOn: 'linux',
     );
 
     test(

@@ -51,9 +51,10 @@
 /// ```
 ///
 /// ## Important Constraints
-/// * **Alignment**: When specifying a non-zero `offset`, it must align with the
-///   host operating system's memory allocation granularity (typically 64 KB on
-///   Windows and 4 KB on POSIX systems).
+/// * **Alignment**: Non-zero `offset` values are automatically aligned down
+///   to [MMFile.allocationGranularity] internally. You can also inspect
+///   [MMFile.allocationGranularity] directly if you want page/granularity-
+///   aligned offsets.
 /// * **Resource Management**: Always call [MMFile.close] when finished. Any
 ///   subsequent access to [MMFile.bytes] or [MMFile.flush] will throw a
 ///   [StateError].

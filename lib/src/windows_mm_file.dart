@@ -128,6 +128,30 @@ typedef _CloseHandleDart = int Function(int hObject);
 typedef _GetLastErrorNative = Uint32 Function();
 typedef _GetLastErrorDart = int Function();
 
+final class _SystemInfo extends Struct {
+  @Uint32()
+  external int dwOemId;
+  @Uint32()
+  external int dwPageSize;
+  external Pointer<Void> lpMinimumApplicationAddress;
+  external Pointer<Void> lpMaximumApplicationAddress;
+  @IntPtr()
+  external int dwActiveProcessorMask;
+  @Uint32()
+  external int dwNumberOfProcessors;
+  @Uint32()
+  external int dwProcessorType;
+  @Uint32()
+  external int dwAllocationGranularity;
+  @Uint16()
+  external int wProcessorLevel;
+  @Uint16()
+  external int wProcessorRevision;
+}
+
+typedef _GetSystemInfoNative = Void Function(Pointer<_SystemInfo> lpSystemInfo);
+typedef _GetSystemInfoDart = void Function(Pointer<_SystemInfo> lpSystemInfo);
+
 class _Kernel32 {
   static final DynamicLibrary _lib = DynamicLibrary.open('kernel32.dll');
 
@@ -167,6 +191,23 @@ class _Kernel32 {
       .lookupFunction<_CloseHandleNative, _CloseHandleDart>('CloseHandle');
   static final getLastError = _lib
       .lookupFunction<_GetLastErrorNative, _GetLastErrorDart>('GetLastError');
+  static final getSystemInfo = _lib
+      .lookupFunction<_GetSystemInfoNative, _GetSystemInfoDart>(
+        'GetSystemInfo',
+      );
+
+  static final int allocationGranularity = _resolveAllocationGranularity();
+
+  static int _resolveAllocationGranularity() {
+    final info = calloc<_SystemInfo>();
+    try {
+      getSystemInfo(info);
+      final granularity = info.ref.dwAllocationGranularity;
+      return granularity > 0 ? granularity : 65536;
+    } finally {
+      calloc.free(info);
+    }
+  }
 }
 
 final class _WindowsMappingResource {
@@ -194,6 +235,7 @@ class WindowsMMFile implements MMFile {
   );
 
   final _WindowsMappingResource _resource;
+  final int _offsetDelta;
   final Uint8List _bytes;
   final bool _isWritable;
 
@@ -202,11 +244,19 @@ class WindowsMMFile implements MMFile {
 
   bool _isClosed = false;
 
-  WindowsMMFile._(this._resource, this.length, MMFileMode mode)
-    : _isWritable = mode == MMFileMode.readWrite,
+  static int get allocationGranularity => _Kernel32.allocationGranularity;
+
+  WindowsMMFile._(
+    this._resource,
+    this._offsetDelta,
+    this.length,
+    MMFileMode mode,
+  ) : _isWritable = mode == MMFileMode.readWrite,
       _bytes = mode == MMFileMode.readOnly
-          ? _resource.ptr.asTypedList(length).asUnmodifiableView()
-          : _resource.ptr.asTypedList(length) {
+          ? (_resource.ptr + _offsetDelta)
+                .asTypedList(length)
+                .asUnmodifiableView()
+          : (_resource.ptr + _offsetDelta).asTypedList(length) {
     _finalizer.attach(this, _resource, detach: this);
   }
 
@@ -335,12 +385,17 @@ class WindowsMMFile implements MMFile {
         );
       }
 
+      final granularity = _Kernel32.allocationGranularity;
+      final offsetDelta = offset % granularity;
+      final alignedOffset = offset - offsetDelta;
+      final alignedLength = mapLength + offsetDelta;
+
       final ptr = _Kernel32.mapViewOfFile(
         hMap,
         mapAccess,
-        (offset >> 32) & 0xFFFFFFFF,
-        offset & 0xFFFFFFFF,
-        mapLength,
+        (alignedOffset >> 32) & 0xFFFFFFFF,
+        alignedOffset & 0xFFFFFFFF,
+        alignedLength,
       );
       if (ptr == nullptr) {
         throw StateError(
@@ -350,6 +405,7 @@ class WindowsMMFile implements MMFile {
 
       return WindowsMMFile._(
         _WindowsMappingResource(hFile, hMap, ptr),
+        offsetDelta,
         mapLength,
         mode,
       );
@@ -435,7 +491,7 @@ class WindowsMMFile implements MMFile {
       return;
     }
 
-    final targetPtr = _resource.ptr + offset;
+    final targetPtr = _resource.ptr + _offsetDelta + offset;
     if (_Kernel32.flushViewOfFile(targetPtr, flushLen) == 0) {
       throw StateError(
         'FlushViewOfFile failed with Win32 error: ${_Kernel32.getLastError()}',

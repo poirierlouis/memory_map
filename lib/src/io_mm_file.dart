@@ -36,3 +36,15 @@ MMFile openMMFile(
     'Unsupported operating system: ${Platform.operatingSystem}',
   );
 }
+
+int getAllocationGranularity() {
+  if (Platform.isWindows) {
+    return WindowsMMFile.allocationGranularity;
+  }
+  if (Platform.isLinux) {
+    return LinuxMMFile.allocationGranularity;
+  }
+  throw UnsupportedError(
+    'Unsupported operating system: ${Platform.operatingSystem}',
+  );
+}

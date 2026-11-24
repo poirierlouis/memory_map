@@ -171,6 +171,7 @@ class LinuxMMFile implements MMFile {
   );
 
   final _LinuxMappingResource _resource;
+  final int _offsetDelta;
   final Uint8List _bytes;
 
   @override
@@ -178,10 +179,18 @@ class LinuxMMFile implements MMFile {
 
   bool _isClosed = false;
 
-  LinuxMMFile._(this._resource, this.length, MMFileMode mode)
-    : _bytes = mode == MMFileMode.readOnly
-          ? _resource.ptr.asTypedList(length).asUnmodifiableView()
-          : _resource.ptr.asTypedList(length) {
+  static int get allocationGranularity => _Libc.pageSize;
+
+  LinuxMMFile._(
+    this._resource,
+    this._offsetDelta,
+    this.length,
+    MMFileMode mode,
+  ) : _bytes = mode == MMFileMode.readOnly
+            ? (_resource.ptr + _offsetDelta)
+                  .asTypedList(length)
+                  .asUnmodifiableView()
+            : (_resource.ptr + _offsetDelta).asTypedList(length) {
     _finalizer.attach(this, _resource, detach: this);
   }
 
@@ -288,13 +297,26 @@ class LinuxMMFile implements MMFile {
         );
       }
 
-      final ptr = _Libc.mmap(nullptr, mapLength, prot, mapFlags, fd, offset);
+      final pageSize = _Libc.pageSize;
+      final offsetDelta = offset % pageSize;
+      final alignedOffset = offset - offsetDelta;
+      final alignedLength = mapLength + offsetDelta;
+
+      final ptr = _Libc.mmap(
+        nullptr,
+        alignedLength,
+        prot,
+        mapFlags,
+        fd,
+        alignedOffset,
+      );
       if (ptr == nullptr || ptr == Pointer<Uint8>.fromAddress(-1)) {
         throw StateError('mmap failed: ${_Libc.errorMessage()}');
       }
 
       return LinuxMMFile._(
-        _LinuxMappingResource(fd, ptr, mapLength),
+        _LinuxMappingResource(fd, ptr, alignedLength),
+        offsetDelta,
         mapLength,
         mode,
       );
@@ -363,7 +385,7 @@ class LinuxMMFile implements MMFile {
     }
 
     final pageSize = _Libc.pageSize;
-    final startAddr = _resource.ptr.address + offset;
+    final startAddr = _resource.ptr.address + _offsetDelta + offset;
     final alignedAddr = startAddr & ~(pageSize - 1);
     final alignedLen = (startAddr - alignedAddr) + flushLen;
 

@@ -60,8 +60,9 @@ void main() {
 
 ## Additional information
 
-- **Alignment**: Non-zero `offset` values must align with the host OS 
-  allocation granularity (64 KB on Windows, page size — typically 4 KB — on Linux).
+- **Alignment**: Non-zero `offset` values are automatically aligned to 
+  `MMFile.allocationGranularity` internally (typically 64 KB on Windows and 
+  page size — usually 4 KB — on Linux).
 - **Lifecycle**: Always call `file.close()` when finished. Accessing `bytes` or 
   calling `flush()` on a closed `MMFile` throws a `StateError`.
 - **Issues & Contributions**: Bug reports and pull requests are welcome on the 
