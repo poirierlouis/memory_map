@@ -4,7 +4,7 @@ import 'stub_mm_file.dart' if (dart.library.io) 'io_mm_file.dart';
 
 /// Access modes for memory-mapped files.
 enum MMFileMode {
-  /// Maps the file as read-only. Writes to [bytes] will throw or segfault.
+  /// Maps the file as read-only. Writes to [bytes] will throw an [UnsupportedError].
   readOnly,
 
   /// Maps the file for reading and writing. Changes are written back to disk.

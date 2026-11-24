@@ -127,6 +127,19 @@ void main() {
       }
     });
 
+    test('readOnly throws UnsupportedError when attempting to write', () {
+      final path = tempFilePath('readonly_write.bin');
+      File(path).writeAsBytesSync([1, 2, 3, 4]);
+
+      final file = MMFile.open(path, mode: MMFileMode.readOnly);
+      try {
+        expect(() => file.bytes[0] = 99, throwsUnsupportedError);
+        expect(file.bytes[0], 1);
+      } finally {
+        file.close();
+      }
+    });
+
     test('copyOnWrite isolates memory edits from disk', () {
       final path = tempFilePath('cow.bin');
       File(path).writeAsBytesSync([1, 2, 3, 4]);
@@ -335,6 +348,58 @@ void main() {
         File(path).readAsBytesSync(),
         orderedEquals([0, 0x11, 0x22, 0x33, 0, 0, 0, 0]),
       );
+    });
+
+    test('flush validates against 64-bit integer overflow and allows length: 0', () {
+      final path = tempFilePath('flush_overflow.bin');
+      File(path).writeAsBytesSync([1, 2, 3, 4]);
+
+      final file = MMFile.open(path, mode: MMFileMode.readWrite);
+      try {
+        expect(() => file.flush(offset: 0, length: 0), returnsNormally);
+        expect(
+          () => file.flush(offset: 2, length: 0x7FFFFFFFFFFFFFFF),
+          throwsRangeError,
+        );
+      } finally {
+        file.close();
+      }
+    });
+
+    test('throws StateError when trying to map a directory', () {
+      expect(
+        () => MMFile.open(tempDir.path, mode: MMFileMode.readOnly),
+        throwsStateError,
+      );
+    });
+
+    test('failed openOrCreate does not leave behind an empty file', () {
+      final path = tempFilePath('no_leak_empty.bin');
+      expect(
+        () => MMFile.open(
+          path,
+          mode: MMFileMode.copyOnWrite,
+          disposition: MMFileDisposition.openOrCreate,
+          length: 16,
+        ),
+        throwsRangeError,
+      );
+      expect(File(path).existsSync(), isFalse);
+    });
+
+    test('createAlways with invalid length does not truncate existing file', () {
+      final path = tempFilePath('no_truncate_invalid.bin');
+      File(path).writeAsBytesSync([1, 2, 3, 4]);
+
+      expect(
+        () => MMFile.open(
+          path,
+          mode: MMFileMode.readWrite,
+          disposition: MMFileDisposition.createAlways,
+        ),
+        throwsArgumentError,
+      );
+      expect(File(path).readAsBytesSync(), orderedEquals([1, 2, 3, 4]));
     });
   });
 }

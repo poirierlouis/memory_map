@@ -1,4 +1,5 @@
 import 'dart:ffi';
+import 'dart:io' show File, FileSystemEntity;
 import 'dart:typed_data';
 
 import 'package:ffi/ffi.dart';
@@ -10,7 +11,10 @@ const int _oRdonly = 0x0000;
 const int _oRdwr = 0x0002;
 const int _oCreat = 0x0040;
 const int _oTrunc = 0x0200;
+const int _oCloexec = 0x80000;
 const int _defaultCreateMode = 0x1B6; // 0666
+
+const int _maxInt64 = 0x7FFFFFFFFFFFFFFF;
 
 const int _seekEnd = 2;
 
@@ -73,17 +77,35 @@ typedef _SysconfDart = int Function(int name);
 typedef _ErrnoLocationNative = Pointer<Int32> Function();
 typedef _ErrnoLocationDart = Pointer<Int32> Function();
 
-typedef _StrerrorNative = Pointer<Utf8> Function(Int32 errnum);
-typedef _StrerrorDart = Pointer<Utf8> Function(int errnum);
+typedef _StrerrorRNative = Int32 Function(
+  Int32 errnum,
+  Pointer<Utf8> buf,
+  IntPtr buflen,
+);
+typedef _StrerrorRDart = int Function(
+  int errnum,
+  Pointer<Utf8> buf,
+  int buflen,
+);
 
 class _Libc {
   static final DynamicLibrary _lib = DynamicLibrary.process();
+  static final bool _is32Bit = sizeOf<IntPtr>() == 4;
+  static final int oLargefile = _is32Bit
+      ? (Abi.current() == Abi.linuxArm ? 0x20000 : 0x8000)
+      : 0;
 
   static final open = _lib.lookupFunction<_OpenNative, _OpenDart>('open');
-  static final lseek = _lib.lookupFunction<_LseekNative, _LseekDart>('lseek');
+  static final lseek = _lib.lookupFunction<_LseekNative, _LseekDart>(
+    _is32Bit ? 'lseek64' : 'lseek',
+  );
   static final ftruncate = _lib
-      .lookupFunction<_FtruncateNative, _FtruncateDart>('ftruncate');
-  static final mmap = _lib.lookupFunction<_MmapNative, _MmapDart>('mmap');
+      .lookupFunction<_FtruncateNative, _FtruncateDart>(
+        _is32Bit ? 'ftruncate64' : 'ftruncate',
+      );
+  static final mmap = _lib.lookupFunction<_MmapNative, _MmapDart>(
+    _is32Bit ? 'mmap64' : 'mmap',
+  );
   static final munmap = _lib.lookupFunction<_MunmapNative, _MunmapDart>(
     'munmap',
   );
@@ -96,9 +118,9 @@ class _Libc {
       .lookupFunction<_ErrnoLocationNative, _ErrnoLocationDart>(
         '__errno_location',
       );
-  static final strerror = _lib.lookupFunction<_StrerrorNative, _StrerrorDart>(
-    'strerror',
-  );
+  static final strerrorR = _lib.providesSymbol('__xpg_strerror_r')
+      ? _lib.lookupFunction<_StrerrorRNative, _StrerrorRDart>('__xpg_strerror_r')
+      : _lib.lookupFunction<_StrerrorRNative, _StrerrorRDart>('strerror_r');
 
   static final int pageSize = _resolvePageSize();
 
@@ -111,15 +133,44 @@ class _Libc {
 
   static String errorMessage([int? err]) {
     final code = err ?? errno;
-    final msgPtr = strerror(code);
-    final msg = msgPtr == nullptr ? 'Unknown error' : msgPtr.toDartString();
-    return '$msg (errno: $code)';
+    const bufSize = 256;
+    final buf = calloc<Uint8>(bufSize);
+    try {
+      final rc = strerrorR(code, buf.cast<Utf8>(), bufSize);
+      if (rc == 0) {
+        return '${buf.cast<Utf8>().toDartString()} (errno: $code)';
+      }
+      return 'Unknown error (errno: $code)';
+    } finally {
+      calloc.free(buf);
+    }
+  }
+}
+
+final class _LinuxMappingResource {
+  final int fd;
+  final Pointer<Uint8> ptr;
+  final int length;
+  bool isDisposed = false;
+
+  _LinuxMappingResource(this.fd, this.ptr, this.length);
+
+  void dispose() {
+    if (isDisposed) {
+      return;
+    }
+    isDisposed = true;
+    _Libc.munmap(ptr, length);
+    _Libc.close(fd);
   }
 }
 
 class LinuxMMFile implements MMFile {
-  final int _fd;
-  final Pointer<Uint8> _ptr;
+  static final Finalizer<_LinuxMappingResource> _finalizer = Finalizer(
+    (resource) => resource.dispose(),
+  );
+
+  final _LinuxMappingResource _resource;
   final Uint8List _bytes;
 
   @override
@@ -127,8 +178,12 @@ class LinuxMMFile implements MMFile {
 
   bool _isClosed = false;
 
-  LinuxMMFile._(this._fd, this._ptr, this.length)
-    : _bytes = _ptr.asTypedList(length);
+  LinuxMMFile._(this._resource, this.length, MMFileMode mode)
+    : _bytes = mode == MMFileMode.readOnly
+          ? _resource.ptr.asTypedList(length).asUnmodifiableView()
+          : _resource.ptr.asTypedList(length) {
+    _finalizer.attach(this, _resource, detach: this);
+  }
 
   factory LinuxMMFile.open(
     String path, {
@@ -156,6 +211,24 @@ class LinuxMMFile implements MMFile {
       );
     }
 
+    if (length != null && length <= 0) {
+      throw ArgumentError.value(
+        length,
+        'length',
+        'Mapped length must be greater than 0.',
+      );
+    }
+
+    if (disposition == .createAlways && length == null) {
+      throw ArgumentError(
+        'Mapped length must be provided when using MMFileDisposition.createAlways.',
+      );
+    }
+
+    if (FileSystemEntity.isDirectorySync(path)) {
+      throw StateError('Cannot memory-map a directory: $path');
+    }
+
     final (openAccess, prot, mapFlags) = switch (mode) {
       MMFileMode.readOnly => (_oRdonly, _protRead, _mapShared),
       MMFileMode.readWrite => (_oRdwr, _protRead | _protWrite, _mapShared),
@@ -168,13 +241,14 @@ class LinuxMMFile implements MMFile {
       MMFileDisposition.createAlways => _oCreat | _oTrunc,
     };
 
+    final existedBefore = File(path).existsSync();
     final pathPtr = path.toNativeUtf8(allocator: calloc);
     int fd = -1;
 
     try {
       fd = _Libc.open(
         pathPtr,
-        openAccess | openDisposition,
+        openAccess | openDisposition | _oCloexec | _Libc.oLargefile,
         _defaultCreateMode,
       );
       if (fd < 0) {
@@ -195,17 +269,18 @@ class LinuxMMFile implements MMFile {
         );
       }
 
+      if (mapLength > _maxInt64 - offset) {
+        throw RangeError(
+          'Requested mapping range [$offset, $offset + $mapLength) overflows 64-bit file size.',
+        );
+      }
+
       final targetEnd = offset + mapLength;
       // Resize the physical file on disk if requested, or if extending in readWrite mode
       final shouldResize =
           resizeFile ||
           (mode == MMFileMode.readWrite && targetEnd > currentFileSize);
       if (shouldResize) {
-        if (mode != MMFileMode.readWrite) {
-          throw StateError(
-            'Cannot map beyond EOF ($targetEnd > $currentFileSize) unless mode is MMFileMode.readWrite.',
-          );
-        }
         _resizeFile(fd, targetEnd);
       } else if (targetEnd > currentFileSize) {
         throw RangeError(
@@ -214,14 +289,23 @@ class LinuxMMFile implements MMFile {
       }
 
       final ptr = _Libc.mmap(nullptr, mapLength, prot, mapFlags, fd, offset);
-      if (ptr == nullptr || ptr.address == -1) {
+      if (ptr == nullptr || ptr == Pointer<Uint8>.fromAddress(-1)) {
         throw StateError('mmap failed: ${_Libc.errorMessage()}');
       }
 
-      return LinuxMMFile._(fd, ptr, mapLength);
+      return LinuxMMFile._(
+        _LinuxMappingResource(fd, ptr, mapLength),
+        mapLength,
+        mode,
+      );
     } catch (_) {
       if (fd >= 0) {
         _Libc.close(fd);
+        if (!existedBefore) {
+          try {
+            File(path).deleteSync();
+          } catch (_) {}
+        }
       }
 
       rethrow;
@@ -263,10 +347,14 @@ class LinuxMMFile implements MMFile {
       throw StateError('Cannot flush a closed MMFile.');
     }
 
+    if (offset < 0 || offset > this.length) {
+      throw RangeError.range(offset, 0, this.length, 'offset');
+    }
+
     final flushLen = length ?? (this.length - offset);
-    if (offset < 0 || flushLen < 0 || offset + flushLen > this.length) {
+    if (flushLen < 0 || flushLen > this.length - offset) {
       throw RangeError(
-        'Flush range [$offset, ${offset + flushLen}) out of bounds [0, ${this.length}).',
+        'Flush range [$offset, $offset + $flushLen) out of bounds [0, ${this.length}).',
       );
     }
 
@@ -275,7 +363,7 @@ class LinuxMMFile implements MMFile {
     }
 
     final pageSize = _Libc.pageSize;
-    final startAddr = _ptr.address + offset;
+    final startAddr = _resource.ptr.address + offset;
     final alignedAddr = startAddr & ~(pageSize - 1);
     final alignedLen = (startAddr - alignedAddr) + flushLen;
 
@@ -292,7 +380,7 @@ class LinuxMMFile implements MMFile {
     }
 
     _isClosed = true;
-    _Libc.munmap(_ptr, length);
-    _Libc.close(_fd);
+    _finalizer.detach(this);
+    _resource.dispose();
   }
 }

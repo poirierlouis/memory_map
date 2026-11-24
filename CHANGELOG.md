@@ -7,9 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Fixed
+- **Windows**: flush is now a synchronous IO operation.
+
 ### Added
 - **Native Linux Implementation**: Pure `dart:ffi` bindings to `libc` requiring
   no external C/C++ build toolchains.
+
+### Changed
+- **Memory management**: use `Finalizer` to release memory mappings and prevent
+  leaks.
 
 ## [0.1.0] - 2026-11-24
 
