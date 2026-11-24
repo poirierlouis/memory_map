@@ -13,14 +13,14 @@ requiring no external C/C++ build toolchains.
   (extend/truncate) files on disk using `MMFileDisposition` and `resizeFile`.
 - **Explicit Resource Safety**: Guards against use-after-free access after 
   `close()` and provides `flush()` to persist modified byte ranges back to disk.
-- **Native Windows Support**: Calls Win32 APIs (`kernel32.dll`) directly via 
-  `dart:ffi`.
+- **Native Cross-Platform Support**: Calls Win32 APIs (`kernel32.dll`) on
+  Windows and POSIX `libc` APIs on Linux directly via `dart:ffi`.
 
 ## Getting started
 
 **Requirements:**
 - Dart SDK `>=3.0.0`
-- **Supported Platforms**: Windows (POSIX support for Linux/macOS planned; Web 
+- **Supported Platforms**: Windows and Linux (macOS/Android planned; Web 
   throws an `UnsupportedError`).
 
 Add `memory_map` to your `pubspec.yaml`:
@@ -61,7 +61,7 @@ void main() {
 ## Additional information
 
 - **Alignment**: Non-zero `offset` values must align with the host OS 
-  allocation granularity (64 KB on Windows).
+  allocation granularity (64 KB on Windows, page size — typically 4 KB — on Linux).
 - **Lifecycle**: Always call `file.close()` when finished. Accessing `bytes` or 
   calling `flush()` on a closed `MMFile` throws a `StateError`.
 - **Issues & Contributions**: Bug reports and pull requests are welcome on the 

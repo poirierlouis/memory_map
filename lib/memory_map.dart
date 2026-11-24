@@ -5,9 +5,9 @@
 /// user-space buffers or incurring intermediate I/O overhead.
 ///
 /// ## Platform Support
-/// * **Windows**: Implemented via direct `dart:ffi` bindings to `kernel32.dll`
-///   (`CreateFileW`, `CreateFileMappingW`, `MapViewOfFile`, etc.) with no
-///   external native compilation required.
+/// * **Windows**: Implemented via `dart:ffi` bindings to the `kernel32.dll`
+///   library.
+/// * **Linux**: Implemented via `dart:ffi` bindings to the standard C library.
 /// * **Web / Unsupported Platforms**: Gracefully throws an [UnsupportedError]
 ///   at runtime via conditional imports.
 ///

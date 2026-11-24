@@ -1,6 +1,3 @@
-@TestOn('windows')
-library;
-
 import 'dart:io';
 import 'dart:typed_data';
 
@@ -23,7 +20,7 @@ void main() {
   String tempFilePath(String name) =>
       '${tempDir.path}${Platform.pathSeparator}$name';
 
-  group('MMFile (Windows) - Lifecycle & Creation', () {
+  group('MMFile - Lifecycle & Creation', () {
     test('creates a new file with createAlways and writes data to disk', () {
       final path = tempFilePath('create_always.bin');
       final file = MMFile.open(
@@ -67,6 +64,28 @@ void main() {
       file.close();
     });
 
+    test('openOrCreate creates a new file when it does not exist', () {
+      final path = tempFilePath('open_or_create_new.bin');
+      final file = MMFile.open(
+        path,
+        mode: MMFileMode.readWrite,
+        disposition: MMFileDisposition.openOrCreate,
+        length: 16,
+      );
+
+      try {
+        expect(file.length, 16);
+        file.bytes[0] = 0x42;
+        file.flush();
+      } finally {
+        file.close();
+      }
+
+      expect(File(path).existsSync(), isTrue);
+      expect(File(path).lengthSync(), 16);
+      expect(File(path).readAsBytesSync()[0], 0x42);
+    });
+
     test('openExisting throws StateError when file does not exist', () {
       final path = tempFilePath('non_existent.bin');
 
@@ -93,7 +112,7 @@ void main() {
     });
   });
 
-  group('MMFile (Windows) - Access Modes', () {
+  group('MMFile - Access Modes', () {
     test('readOnly maps entire file accurately', () {
       final path = tempFilePath('readonly.bin');
       final expected = Uint8List.fromList(List.generate(1024, (i) => i % 256));
@@ -125,7 +144,7 @@ void main() {
     });
   });
 
-  group('MMFile (Windows) - Offsets & Resizing', () {
+  group('MMFile - Offsets & Resizing', () {
     test('maps with a 64KB-aligned non-zero offset', () {
       const granularity =
           64 * 1024; // Windows allocation granularity (65,536 bytes)
@@ -158,15 +177,51 @@ void main() {
       expect(updated[granularity + 1], 0xCC);
     });
 
-    test('fails when offset is not aligned to Windows 64KB granularity', () {
+    test('fails when offset is not aligned to OS allocation granularity', () {
       final path = tempFilePath('unaligned_offset.bin');
       File(path).writeAsBytesSync(Uint8List(8192));
 
       expect(
-        () => MMFile.open(path, offset: 4096, length: 1024),
-        throwsStateError, // MapViewOfFile fails with ERROR_MAPPED_ALIGNMENT (1132)
+        () => MMFile.open(path, offset: 512, length: 1024),
+        throwsStateError,
       );
     });
+
+    test(
+      'fails when offset is 4096 (not aligned to Windows 64KB granularity)',
+      () {
+        final path = tempFilePath('unaligned_4096_offset.bin');
+        File(path).writeAsBytesSync(Uint8List(8192));
+
+        expect(
+          () => MMFile.open(path, offset: 4096, length: 1024),
+          throwsStateError, // MapViewOfFile fails with ERROR_MAPPED_ALIGNMENT (1132)
+        );
+      },
+      testOn: 'windows',
+    );
+
+    test(
+      'automatically extends file when readWrite mapping exceeds file size',
+      () {
+        final path = tempFilePath('auto_extend.bin');
+        File(path).writeAsBytesSync([1, 2, 3, 4]);
+
+        final file = MMFile.open(path, mode: MMFileMode.readWrite, length: 12);
+        try {
+          expect(file.length, 12);
+          file.bytes[11] = 0x99;
+          file.flush();
+        } finally {
+          file.close();
+        }
+
+        final diskBytes = File(path).readAsBytesSync();
+        expect(diskBytes.length, 12);
+        expect(diskBytes.sublist(0, 4), orderedEquals([1, 2, 3, 4]));
+        expect(diskBytes[11], 0x99);
+      },
+    );
 
     test('resizes (extends and truncates) an existing file when resizeFile is true', () {
       final path = tempFilePath('resize.bin');
@@ -200,7 +255,7 @@ void main() {
     });
   });
 
-  group('MMFile (Windows) - Validation & Bounds', () {
+  group('MMFile - Validation & Bounds', () {
     test('throws ArgumentError on invalid arguments', () {
       final path = tempFilePath('validation.bin');
       File(path).writeAsBytesSync([1, 2, 3, 4]);
@@ -234,12 +289,16 @@ void main() {
       );
     });
 
-    test('throws RangeError when readOnly mapping exceeds file size', () {
+    test('throws RangeError when non-readWrite mapping exceeds file size', () {
       final path = tempFilePath('eof_bounds.bin');
       File(path).writeAsBytesSync([1, 2, 3, 4]);
 
       expect(
         () => MMFile.open(path, mode: MMFileMode.readOnly, length: 100),
+        throwsRangeError,
+      );
+      expect(
+        () => MMFile.open(path, mode: MMFileMode.copyOnWrite, length: 100),
         throwsRangeError,
       );
     });
@@ -256,6 +315,26 @@ void main() {
       } finally {
         file.close();
       }
+    });
+
+    test('partial unaligned flush persists modified range to disk', () {
+      final path = tempFilePath('partial_flush.bin');
+      File(path).writeAsBytesSync([0, 0, 0, 0, 0, 0, 0, 0]);
+
+      final file = MMFile.open(path, mode: MMFileMode.readWrite);
+      try {
+        file.bytes[1] = 0x11;
+        file.bytes[2] = 0x22;
+        file.bytes[3] = 0x33;
+        file.flush(offset: 1, length: 3);
+      } finally {
+        file.close();
+      }
+
+      expect(
+        File(path).readAsBytesSync(),
+        orderedEquals([0, 0x11, 0x22, 0x33, 0, 0, 0, 0]),
+      );
     });
   });
 }

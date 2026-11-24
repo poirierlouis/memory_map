@@ -1,9 +1,8 @@
 import 'dart:io' show Platform;
 
+import 'linux_mm_file.dart';
 import 'mm_file.dart';
 import 'windows_mm_file.dart';
-
-// import 'posix_mm_file.dart';
 
 MMFile openMMFile(
   String path, {
@@ -15,6 +14,16 @@ MMFile openMMFile(
 }) {
   if (Platform.isWindows) {
     return WindowsMMFile.open(
+      path,
+      mode: mode,
+      disposition: disposition,
+      offset: offset,
+      length: length,
+      resizeFile: resizeFile,
+    );
+  }
+  if (Platform.isLinux) {
+    return LinuxMMFile.open(
       path,
       mode: mode,
       disposition: disposition,
