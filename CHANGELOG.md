@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-24
+
 ### Added
 - **Native Linux Implementation**: Added pure `dart:ffi` bindings to `libc` with support for both 32-bit and 64-bit Linux systems.
 - **Allocation Granularity**: Added `MMFile.allocationGranularity` to query the host operating system's memory allocation granularity.
@@ -36,5 +38,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Platform Routing**: Conditional imports and runtime platform checks that
   gracefully throw `UnsupportedError` on unsupported platforms (such as Web).
 
-[unreleased]: https://github.com/poirierlouis/memory_map/compare/v0.1.0...HEAD
+[unreleased]: https://github.com/poirierlouis/memory_map/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/poirierlouis/memory_map/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/poirierlouis/memory_map/releases/tag/v0.1.0

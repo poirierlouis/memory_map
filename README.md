@@ -27,7 +27,7 @@ Add `memory_map` to your `pubspec.yaml`:
 
 ```yaml
 dependencies:
-  memory_map: ^0.1.0
+  memory_map: ^0.2.0
 ```
 
 ## Usage
