@@ -1,5 +1,5 @@
 name: memory_map
-description: Zero-copy memory-mapped file support for Dart
+description: Zero-copy memory-mapped file support for Dart on Windows / Linux.
 version: 0.2.0
 repository: https://github.com/poirierlouis/memory_map
 
