@@ -1,4 +1,5 @@
 import 'dart:ffi';
+import 'dart:io' show File;
 import 'dart:typed_data';
 
 import 'package:ffi/ffi.dart';
@@ -29,6 +30,8 @@ const int _pageWriteCopy = 0x08;
 const int _fileMapCopy = 0x0001;
 const int _fileMapWrite = 0x0002;
 const int _fileMapRead = 0x0004;
+
+const int _maxInt64 = 0x7FFFFFFFFFFFFFFF;
 
 // --- Native C Type Signatures ---
 typedef _CreateFileWNative = IntPtr Function(
@@ -113,6 +116,9 @@ typedef _FlushViewOfFileDart = int Function(
   int dwNumberOfBytesToFlush,
 );
 
+typedef _FlushFileBuffersNative = Int32 Function(IntPtr hFile);
+typedef _FlushFileBuffersDart = int Function(int hFile);
+
 typedef _UnmapViewOfFileNative = Int32 Function(Pointer<Uint8> lpBaseAddress);
 typedef _UnmapViewOfFileDart = int Function(Pointer<Uint8> lpBaseAddress);
 
@@ -121,6 +127,30 @@ typedef _CloseHandleDart = int Function(int hObject);
 
 typedef _GetLastErrorNative = Uint32 Function();
 typedef _GetLastErrorDart = int Function();
+
+final class _SystemInfo extends Struct {
+  @Uint32()
+  external int dwOemId;
+  @Uint32()
+  external int dwPageSize;
+  external Pointer<Void> lpMinimumApplicationAddress;
+  external Pointer<Void> lpMaximumApplicationAddress;
+  @IntPtr()
+  external int dwActiveProcessorMask;
+  @Uint32()
+  external int dwNumberOfProcessors;
+  @Uint32()
+  external int dwProcessorType;
+  @Uint32()
+  external int dwAllocationGranularity;
+  @Uint16()
+  external int wProcessorLevel;
+  @Uint16()
+  external int wProcessorRevision;
+}
+
+typedef _GetSystemInfoNative = Void Function(Pointer<_SystemInfo> lpSystemInfo);
+typedef _GetSystemInfoDart = void Function(Pointer<_SystemInfo> lpSystemInfo);
 
 class _Kernel32 {
   static final DynamicLibrary _lib = DynamicLibrary.open('kernel32.dll');
@@ -149,6 +179,10 @@ class _Kernel32 {
       .lookupFunction<_FlushViewOfFileNative, _FlushViewOfFileDart>(
         'FlushViewOfFile',
       );
+  static final flushFileBuffers = _lib
+      .lookupFunction<_FlushFileBuffersNative, _FlushFileBuffersDart>(
+        'FlushFileBuffers',
+      );
   static final unmapViewOfFile = _lib
       .lookupFunction<_UnmapViewOfFileNative, _UnmapViewOfFileDart>(
         'UnmapViewOfFile',
@@ -157,21 +191,74 @@ class _Kernel32 {
       .lookupFunction<_CloseHandleNative, _CloseHandleDart>('CloseHandle');
   static final getLastError = _lib
       .lookupFunction<_GetLastErrorNative, _GetLastErrorDart>('GetLastError');
+  static final getSystemInfo = _lib
+      .lookupFunction<_GetSystemInfoNative, _GetSystemInfoDart>(
+        'GetSystemInfo',
+      );
+
+  static final int allocationGranularity = _resolveAllocationGranularity();
+
+  static int _resolveAllocationGranularity() {
+    final info = calloc<_SystemInfo>();
+    try {
+      getSystemInfo(info);
+      final granularity = info.ref.dwAllocationGranularity;
+      return granularity > 0 ? granularity : 65536;
+    } finally {
+      calloc.free(info);
+    }
+  }
+}
+
+final class _WindowsMappingResource {
+  final int hFile;
+  final int hMap;
+  final Pointer<Uint8> ptr;
+  bool isDisposed = false;
+
+  _WindowsMappingResource(this.hFile, this.hMap, this.ptr);
+
+  void dispose() {
+    if (isDisposed) {
+      return;
+    }
+    isDisposed = true;
+    _Kernel32.unmapViewOfFile(ptr);
+    _Kernel32.closeHandle(hMap);
+    _Kernel32.closeHandle(hFile);
+  }
 }
 
 class WindowsMMFile implements MMFile {
-  final int _hFile;
-  final int _hMap;
-  final Pointer<Uint8> _ptr;
+  static final Finalizer<_WindowsMappingResource> _finalizer = Finalizer(
+    (resource) => resource.dispose(),
+  );
+
+  final _WindowsMappingResource _resource;
+  final int _offsetDelta;
   final Uint8List _bytes;
+  final bool _isWritable;
 
   @override
   final int length;
 
   bool _isClosed = false;
 
-  WindowsMMFile._(this._hFile, this._hMap, this._ptr, this.length)
-    : _bytes = _ptr.asTypedList(length);
+  static int get allocationGranularity => _Kernel32.allocationGranularity;
+
+  WindowsMMFile._(
+    this._resource,
+    this._offsetDelta,
+    this.length,
+    MMFileMode mode,
+  ) : _isWritable = mode == MMFileMode.readWrite,
+      _bytes = mode == MMFileMode.readOnly
+          ? (_resource.ptr + _offsetDelta)
+                .asTypedList(length)
+                .asUnmodifiableView()
+          : (_resource.ptr + _offsetDelta).asTypedList(length) {
+    _finalizer.attach(this, _resource, detach: this);
+  }
 
   factory WindowsMMFile.open(
     String path, {
@@ -199,6 +286,20 @@ class WindowsMMFile implements MMFile {
       );
     }
 
+    if (length != null && length <= 0) {
+      throw ArgumentError.value(
+        length,
+        'length',
+        'Mapped length must be greater than 0.',
+      );
+    }
+
+    if (disposition == .createAlways && length == null) {
+      throw ArgumentError(
+        'Mapped length must be provided when using MMFileDisposition.createAlways.',
+      );
+    }
+
     final (desiredAccess, flProtect, mapAccess) = switch (mode) {
       MMFileMode.readOnly => (_genericRead, _pageReadOnly, _fileMapRead),
       MMFileMode.readWrite => (
@@ -215,6 +316,7 @@ class WindowsMMFile implements MMFile {
       MMFileDisposition.createAlways => _createAlways,
     };
 
+    final existedBefore = File(path).existsSync();
     final pathPtr = _toUtf16(path);
     int hFile = _invalidHandleValue;
     int hMap = 0;
@@ -250,17 +352,18 @@ class WindowsMMFile implements MMFile {
         );
       }
 
+      if (mapLength > _maxInt64 - offset) {
+        throw RangeError(
+          'Requested mapping range [$offset, $offset + $mapLength) overflows 64-bit file size.',
+        );
+      }
+
       final targetEnd = offset + mapLength;
       // Resize the physical file on disk if requested, or if extending in readWrite mode
       final shouldResize =
           resizeFile ||
           (mode == MMFileMode.readWrite && targetEnd > currentFileSize);
       if (shouldResize) {
-        if (mode != MMFileMode.readWrite) {
-          throw StateError(
-            'Cannot map beyond EOF ($targetEnd > $currentFileSize) unless mode is MMFileMode.readWrite.',
-          );
-        }
         _resizeFile(hFile, targetEnd);
       } else if (targetEnd > currentFileSize) {
         throw RangeError(
@@ -282,12 +385,17 @@ class WindowsMMFile implements MMFile {
         );
       }
 
+      final granularity = _Kernel32.allocationGranularity;
+      final offsetDelta = offset % granularity;
+      final alignedOffset = offset - offsetDelta;
+      final alignedLength = mapLength + offsetDelta;
+
       final ptr = _Kernel32.mapViewOfFile(
         hMap,
         mapAccess,
-        (offset >> 32) & 0xFFFFFFFF,
-        offset & 0xFFFFFFFF,
-        mapLength,
+        (alignedOffset >> 32) & 0xFFFFFFFF,
+        alignedOffset & 0xFFFFFFFF,
+        alignedLength,
       );
       if (ptr == nullptr) {
         throw StateError(
@@ -295,7 +403,12 @@ class WindowsMMFile implements MMFile {
         );
       }
 
-      return WindowsMMFile._(hFile, hMap, ptr, mapLength);
+      return WindowsMMFile._(
+        _WindowsMappingResource(hFile, hMap, ptr),
+        offsetDelta,
+        mapLength,
+        mode,
+      );
     } catch (_) {
       if (hMap != 0) {
         _Kernel32.closeHandle(hMap);
@@ -303,6 +416,11 @@ class WindowsMMFile implements MMFile {
 
       if (hFile != _invalidHandleValue) {
         _Kernel32.closeHandle(hFile);
+        if (!existedBefore) {
+          try {
+            File(path).deleteSync();
+          } catch (_) {}
+        }
       }
 
       rethrow;
@@ -358,17 +476,31 @@ class WindowsMMFile implements MMFile {
       throw StateError('Cannot flush a closed MMFile.');
     }
 
+    if (offset < 0 || offset > this.length) {
+      throw RangeError.range(offset, 0, this.length, 'offset');
+    }
+
     final flushLen = length ?? (this.length - offset);
-    if (offset < 0 || flushLen < 0 || offset + flushLen > this.length) {
+    if (flushLen < 0 || flushLen > this.length - offset) {
       throw RangeError(
-        'Flush range [$offset, ${offset + flushLen}) out of bounds [0, ${this.length}).',
+        'Flush range [$offset, $offset + $flushLen) out of bounds [0, ${this.length}).',
       );
     }
 
-    final targetPtr = _ptr + offset;
+    if (flushLen == 0) {
+      return;
+    }
+
+    final targetPtr = _resource.ptr + _offsetDelta + offset;
     if (_Kernel32.flushViewOfFile(targetPtr, flushLen) == 0) {
       throw StateError(
         'FlushViewOfFile failed with Win32 error: ${_Kernel32.getLastError()}',
+      );
+    }
+
+    if (_isWritable && _Kernel32.flushFileBuffers(_resource.hFile) == 0) {
+      throw StateError(
+        'FlushFileBuffers failed with Win32 error: ${_Kernel32.getLastError()}',
       );
     }
   }
@@ -380,9 +512,8 @@ class WindowsMMFile implements MMFile {
     }
 
     _isClosed = true;
-    _Kernel32.unmapViewOfFile(_ptr);
-    _Kernel32.closeHandle(_hMap);
-    _Kernel32.closeHandle(_hFile);
+    _finalizer.detach(this);
+    _resource.dispose();
   }
 
   static Pointer<Uint16> _toUtf16(String str) {

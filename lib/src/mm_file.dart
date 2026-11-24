@@ -4,7 +4,7 @@ import 'stub_mm_file.dart' if (dart.library.io) 'io_mm_file.dart';
 
 /// Access modes for memory-mapped files.
 enum MMFileMode {
-  /// Maps the file as read-only. Writes to [bytes] will throw or segfault.
+  /// Maps the file as read-only. Writes to [bytes] will throw an [UnsupportedError].
   readOnly,
 
   /// Maps the file for reading and writing. Changes are written back to disk.
@@ -33,7 +33,8 @@ abstract interface class MMFile {
   ///
   /// - [mode]: Memory access mode ([MMFileMode.readOnly], [MMFileMode.readWrite], etc.).
   /// - [disposition]: Whether to open an existing file or create/overwrite one.
-  /// - [offset]: Byte offset in the file where mapping begins (must align with OS granularity).
+  /// - [offset]: Byte offset in the file where mapping begins. Unaligned
+  ///   offsets are automatically aligned to [allocationGranularity] internally.
   /// - [length]: Number of bytes to map. Required when creating a new empty file,
   ///   or when resizing an existing file. If omitted for an existing file, maps until EOF.
   /// - [resizeFile]: If `true` and [mode] is [MMFileMode.readWrite], resizes the
@@ -53,6 +54,11 @@ abstract interface class MMFile {
     length: length,
     resizeFile: resizeFile,
   );
+
+  /// The host operating system's memory allocation granularity in bytes
+  /// (typically 65 536 bytes on Windows and the page size, usually 4 096 bytes
+  /// on Linux).
+  static int get allocationGranularity => getAllocationGranularity();
 
   /// Zero-copy view of the mapped memory region.
   ///

@@ -12,3 +12,9 @@ MMFile openMMFile(
     'Memory-mapped files are not supported on this platform.',
   );
 }
+
+int getAllocationGranularity() {
+  throw UnsupportedError(
+    'Memory-mapped files are not supported on this platform.',
+  );
+}
