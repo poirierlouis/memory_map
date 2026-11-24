@@ -1,0 +1,79 @@
+name: Release & Publish
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+      - 'v[0-9]+.[0-9]+.[0-9]+-*'
+
+permissions:
+  # Needed to create GitHub Releases
+  contents: write
+
+  # Needed for OIDC publishing to pub.dev
+  id-token: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Verify tag is on main branch
+        run: |
+          git fetch origin main:refs/remotes/origin/main
+          if ! git merge-base --is-ancestor "${{ github.sha }}" origin/main; then
+            echo "Error: Tag ${{ github.ref_name }} is not an ancestor of main."
+            exit 1
+          fi
+
+      - name: Setup Dart SDK
+        uses: dart-lang/setup-dart@v1
+        with:
+          sdk: stable
+
+      - name: Install dependencies
+        run: dart pub get
+
+      - name: Verify formatting & analysis
+        run: |
+          dart format --output=none --set-exit-if-changed .
+          dart analyze --fatal-infos
+
+      - name: Extract changelog notes for ${{ github.ref_name }}
+        id: changelog
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          # Extracts lines between "## [X.Y.Z]" (or "## X.Y.Z") and the next "## " heading
+          NOTES=$(awk -v ver="$VERSION" '
+            $0 ~ "^## \\[?" ver "\\]?" { flag=1; next }
+            /^## / && flag { exit }
+            flag { print }
+          ' CHANGELOG.md)
+
+          if [ -z "$NOTES" ]; then
+            echo "Warning: No matching section found in CHANGELOG.md for $VERSION"
+            NOTES="Release ${{ github.ref_name }}"
+          fi
+
+          {
+            echo "notes<<EOF"
+            echo "$NOTES"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          name: ${{ github.ref_name }}
+          body: ${{ steps.changelog.outputs.notes }}
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}
+
+      - name: Publish package to pub.dev
+        run: dart pub publish --force

@@ -1,0 +1,14 @@
+name: memory_map
+description: Zero-copy memory-mapped file support for Dart
+version: 0.1.0
+repository: https://github.com/poirierlouis/memory_map
+
+environment:
+  sdk: ^3.13.7
+
+dependencies:
+  ffi: ^2.2.0
+
+dev_dependencies:
+  lints: ^6.0.0
+  test: ^1.25.6
