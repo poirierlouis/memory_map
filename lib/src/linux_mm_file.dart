@@ -119,7 +119,9 @@ class _Libc {
         '__errno_location',
       );
   static final strerrorR = _lib.providesSymbol('__xpg_strerror_r')
-      ? _lib.lookupFunction<_StrerrorRNative, _StrerrorRDart>('__xpg_strerror_r')
+      ? _lib.lookupFunction<_StrerrorRNative, _StrerrorRDart>(
+          '__xpg_strerror_r',
+        )
       : _lib.lookupFunction<_StrerrorRNative, _StrerrorRDart>('strerror_r');
 
   static final int pageSize = _resolvePageSize();
@@ -181,16 +183,12 @@ class LinuxMMFile implements MMFile {
 
   static int get allocationGranularity => _Libc.pageSize;
 
-  LinuxMMFile._(
-    this._resource,
-    this._offsetDelta,
-    this.length,
-    MMFileMode mode,
-  ) : _bytes = mode == MMFileMode.readOnly
-            ? (_resource.ptr + _offsetDelta)
-                  .asTypedList(length)
-                  .asUnmodifiableView()
-            : (_resource.ptr + _offsetDelta).asTypedList(length) {
+  LinuxMMFile._(this._resource, this._offsetDelta, this.length, MMFileMode mode)
+    : _bytes = mode == MMFileMode.readOnly
+          ? (_resource.ptr + _offsetDelta)
+                .asTypedList(length)
+                .asUnmodifiableView()
+          : (_resource.ptr + _offsetDelta).asTypedList(length) {
     _finalizer.attach(this, _resource, detach: this);
   }
 

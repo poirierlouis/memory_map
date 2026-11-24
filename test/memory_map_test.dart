@@ -195,43 +195,42 @@ void main() {
       expect(updated[granularity + 1], 0xCC);
     });
 
-    test('maps with an unaligned offset (512 bytes) and flushes accurately', () {
-      final path = tempFilePath('unaligned_offset.bin');
-      final initial = Uint8List.fromList(
-        List.generate(8192, (i) => i % 251),
-      );
-      File(path).writeAsBytesSync(initial);
+    test(
+      'maps with an unaligned offset (512 bytes) and flushes accurately',
+      () {
+        final path = tempFilePath('unaligned_offset.bin');
+        final initial = Uint8List.fromList(List.generate(8192, (i) => i % 251));
+        File(path).writeAsBytesSync(initial);
 
-      final file = MMFile.open(
-        path,
-        mode: MMFileMode.readWrite,
-        offset: 512,
-        length: 1024,
-      );
-      try {
-        expect(file.length, 1024);
-        expect(file.bytes[0], initial[512]);
-        expect(file.bytes[1023], initial[512 + 1023]);
+        final file = MMFile.open(
+          path,
+          mode: MMFileMode.readWrite,
+          offset: 512,
+          length: 1024,
+        );
+        try {
+          expect(file.length, 1024);
+          expect(file.bytes[0], initial[512]);
+          expect(file.bytes[1023], initial[512 + 1023]);
 
-        file.bytes[0] = 0xDE;
-        file.bytes[1023] = 0xAD;
-        file.flush();
-      } finally {
-        file.close();
-      }
+          file.bytes[0] = 0xDE;
+          file.bytes[1023] = 0xAD;
+          file.flush();
+        } finally {
+          file.close();
+        }
 
-      final updated = File(path).readAsBytesSync();
-      expect(updated[511], initial[511]);
-      expect(updated[512], 0xDE);
-      expect(updated[512 + 1023], 0xAD);
-      expect(updated[512 + 1024], initial[512 + 1024]);
-    });
+        final updated = File(path).readAsBytesSync();
+        expect(updated[511], initial[511]);
+        expect(updated[512], 0xDE);
+        expect(updated[512 + 1023], 0xAD);
+        expect(updated[512 + 1024], initial[512 + 1024]);
+      },
+    );
 
     test('maps with unaligned offset and omitted length until EOF', () {
       final path = tempFilePath('unaligned_eof.bin');
-      final initial = Uint8List.fromList(
-        List.generate(5000, (i) => i % 256),
-      );
+      final initial = Uint8List.fromList(List.generate(5000, (i) => i % 256));
       File(path).writeAsBytesSync(initial);
 
       final file = MMFile.open(path, offset: 333);
@@ -243,53 +242,52 @@ void main() {
       }
     });
 
-    test('maps with offset 4096 (page-aligned on Linux, auto-aligned on Windows)', () {
-      final path = tempFilePath('offset_4096.bin');
-      final initial = Uint8List(8192);
-      initial[4096] = 0x11;
-      initial[4096 + 1023] = 0x22;
-      File(path).writeAsBytesSync(initial);
-
-      final file = MMFile.open(
-        path,
-        mode: MMFileMode.readWrite,
-        offset: 4096,
-        length: 1024,
-      );
-      try {
-        expect(file.length, 1024);
-        expect(file.bytes[0], 0x11);
-        expect(file.bytes[1023], 0x22);
-
-        file.bytes[10] = 0x33;
-        file.flush();
-      } finally {
-        file.close();
-      }
-
-      final updated = File(path).readAsBytesSync();
-      expect(updated[4096 + 10], 0x33);
-    });
-
     test(
-      'maps with page-aligned offset 4096 on Linux',
+      'maps with offset 4096 (page-aligned on Linux, auto-aligned on Windows)',
       () {
-        expect(MMFile.allocationGranularity, 4096);
-        final path = tempFilePath('linux_4096_offset.bin');
+        final path = tempFilePath('offset_4096.bin');
         final initial = Uint8List(8192);
-        initial[4096] = 0x5A;
+        initial[4096] = 0x11;
+        initial[4096 + 1023] = 0x22;
         File(path).writeAsBytesSync(initial);
 
-        final file = MMFile.open(path, offset: 4096, length: 1024);
+        final file = MMFile.open(
+          path,
+          mode: MMFileMode.readWrite,
+          offset: 4096,
+          length: 1024,
+        );
         try {
           expect(file.length, 1024);
-          expect(file.bytes[0], 0x5A);
+          expect(file.bytes[0], 0x11);
+          expect(file.bytes[1023], 0x22);
+
+          file.bytes[10] = 0x33;
+          file.flush();
         } finally {
           file.close();
         }
+
+        final updated = File(path).readAsBytesSync();
+        expect(updated[4096 + 10], 0x33);
       },
-      testOn: 'linux',
     );
+
+    test('maps with page-aligned offset 4096 on Linux', () {
+      expect(MMFile.allocationGranularity, 4096);
+      final path = tempFilePath('linux_4096_offset.bin');
+      final initial = Uint8List(8192);
+      initial[4096] = 0x5A;
+      File(path).writeAsBytesSync(initial);
+
+      final file = MMFile.open(path, offset: 4096, length: 1024);
+      try {
+        expect(file.length, 1024);
+        expect(file.bytes[0], 0x5A);
+      } finally {
+        file.close();
+      }
+    }, testOn: 'linux');
 
     test(
       'automatically extends file when readWrite mapping exceeds file size',
@@ -427,21 +425,24 @@ void main() {
       );
     });
 
-    test('flush validates against 64-bit integer overflow and allows length: 0', () {
-      final path = tempFilePath('flush_overflow.bin');
-      File(path).writeAsBytesSync([1, 2, 3, 4]);
+    test(
+      'flush validates against 64-bit integer overflow and allows length: 0',
+      () {
+        final path = tempFilePath('flush_overflow.bin');
+        File(path).writeAsBytesSync([1, 2, 3, 4]);
 
-      final file = MMFile.open(path, mode: MMFileMode.readWrite);
-      try {
-        expect(() => file.flush(offset: 0, length: 0), returnsNormally);
-        expect(
-          () => file.flush(offset: 2, length: 0x7FFFFFFFFFFFFFFF),
-          throwsRangeError,
-        );
-      } finally {
-        file.close();
-      }
-    });
+        final file = MMFile.open(path, mode: MMFileMode.readWrite);
+        try {
+          expect(() => file.flush(offset: 0, length: 0), returnsNormally);
+          expect(
+            () => file.flush(offset: 2, length: 0x7FFFFFFFFFFFFFFF),
+            throwsRangeError,
+          );
+        } finally {
+          file.close();
+        }
+      },
+    );
 
     test('throws StateError when trying to map a directory', () {
       expect(
@@ -464,19 +465,22 @@ void main() {
       expect(File(path).existsSync(), isFalse);
     });
 
-    test('createAlways with invalid length does not truncate existing file', () {
-      final path = tempFilePath('no_truncate_invalid.bin');
-      File(path).writeAsBytesSync([1, 2, 3, 4]);
+    test(
+      'createAlways with invalid length does not truncate existing file',
+      () {
+        final path = tempFilePath('no_truncate_invalid.bin');
+        File(path).writeAsBytesSync([1, 2, 3, 4]);
 
-      expect(
-        () => MMFile.open(
-          path,
-          mode: MMFileMode.readWrite,
-          disposition: MMFileDisposition.createAlways,
-        ),
-        throwsArgumentError,
-      );
-      expect(File(path).readAsBytesSync(), orderedEquals([1, 2, 3, 4]));
-    });
+        expect(
+          () => MMFile.open(
+            path,
+            mode: MMFileMode.readWrite,
+            disposition: MMFileDisposition.createAlways,
+          ),
+          throwsArgumentError,
+        );
+        expect(File(path).readAsBytesSync(), orderedEquals([1, 2, 3, 4]));
+      },
+    );
   });
 }
